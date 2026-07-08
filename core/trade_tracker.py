@@ -34,7 +34,7 @@ class TradeTracker:
         with open(TRADE_TRACKER_FILE, "w") as f:
             json.dump(self._state, f)
 
-    def open_trade(self, symbol, side, entry, stop, tps, qty_total, leg_qty, tp_order_ids):
+    def open_trade(self, symbol, side, entry, stop, tps, qty_total, leg_qty, tp_order_ids, signal_msg_id=None):
         with _lock:
             self._state[symbol] = {
                 "side": side,
@@ -47,6 +47,9 @@ class TradeTracker:
                 "legs_filled": [False] * len(tps),
                 "sl_moved_to": None,
                 "opened_at": time.time(),
+                # Telegram message_id of the original "signal received" post, so later TP/SL
+                # notifications for this coin can reply to it and thread together.
+                "signal_msg_id": signal_msg_id,
             }
             self._save()
             logger.info(f"Trade tracker: opened {symbol} with {len(tps)} TP legs")

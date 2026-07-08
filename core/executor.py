@@ -129,23 +129,28 @@ class SignalExecutor:
                 self.risk.record_entry(signal.symbol)
                 self.consecutive_failures = 0
                 send_telegram_message(
-                    f"✅ Order placed: {signal.symbol} {signal.side} @ {signal.entry}\n"
+                    f"✅ Order placed: #{signal.symbol} {signal.side} @ {signal.entry}\n"
                     f"Qty {signal.qty}  SL {signal.stop}  TPs {signal.tps}\n"
-                    f"Order ID: {order_id}"
+                    f"Order ID: {order_id}",
+                    reply_to=signal.msg_id,
                 )
                 self._place_tp_legs(signal)
             else:
                 logger.error(red(f"[FAIL] Order failed: {result}"))
                 self._note_failure()
                 send_telegram_message(
-                    f"❌ Order failed: {signal.symbol} {signal.side} @ {signal.entry}\n"
-                    f"{result.get('retMsg', result)}"
+                    f"❌ Order failed: #{signal.symbol} {signal.side} @ {signal.entry}\n"
+                    f"{result.get('retMsg', result)}",
+                    reply_to=signal.msg_id,
                 )
 
         except Exception as e:
             logger.error(red(f"Trade execution error: {e}"))
             self._note_failure()
-            send_telegram_message(f"❌ Trade execution error: {signal.symbol} {signal.side} - {e}")
+            send_telegram_message(
+                f"❌ Trade execution error: #{signal.symbol} {signal.side} - {e}",
+                reply_to=signal.msg_id,
+            )
 
     def _place_tp_legs(self, signal):
         """Split the position into one reduce-only limit order per TP level. If a leg's
@@ -185,6 +190,7 @@ class SignalExecutor:
             qty_total=signal.qty,
             leg_qty=leg_qty,
             tp_order_ids=tp_order_ids,
+            signal_msg_id=signal.msg_id,
         )
 
     def _note_failure(self):
@@ -219,7 +225,7 @@ class SignalExecutor:
                     if symbol in tracked_symbols:
                         continue  # already notified with full detail by _check_tp_legs
                     logger.info(green(f"Position closed: {symbol}"))
-                    send_telegram_message(f"🔔 Position closed: {symbol}")
+                    send_telegram_message(f"🔔 Position closed: #{symbol}")
 
                 fixes = self.client.check_and_fix_protection()
                 for fix in fixes:
@@ -295,22 +301,28 @@ class SignalExecutor:
         if is_final:
             return  # all-targets summary covers this leg too, no separate SL move needed
 
+        reply_to = trade.get("signal_msg_id")
         if index == 0:
-            send_telegram_message(f"🎯 TP1 hit: {symbol} @ {tp_price}\nProfit this leg: {profit:.2f} USDT")
+            send_telegram_message(
+                f"🎯 TP1 hit: #{symbol} @ {tp_price}\nProfit this leg: {profit:.2f} USDT",
+                reply_to=reply_to,
+            )
         elif index == 1:
             self.client.set_stop_loss(symbol, entry)
             self.trades.update_sl_stage(symbol, "breakeven")
             send_telegram_message(
-                f"🎯 TP2 hit: {symbol} @ {tp_price}\nProfit this leg: {profit:.2f} USDT\n"
-                f"🔒 SL moved to breakeven ({entry})"
+                f"🎯 TP2 hit: #{symbol} @ {tp_price}\nProfit this leg: {profit:.2f} USDT\n"
+                f"🔒 SL moved to breakeven ({entry})",
+                reply_to=reply_to,
             )
         else:
             new_sl = trade["tps"][index - 1]
             self.client.set_stop_loss(symbol, new_sl)
             self.trades.update_sl_stage(symbol, f"tp{index}")
             send_telegram_message(
-                f"🎯 TP{tp_num} hit: {symbol} @ {tp_price}\nProfit this leg: {profit:.2f} USDT\n"
-                f"🔒 SL moved to TP{index} ({new_sl})"
+                f"🎯 TP{tp_num} hit: #{symbol} @ {tp_price}\nProfit this leg: {profit:.2f} USDT\n"
+                f"🔒 SL moved to TP{index} ({new_sl})",
+                reply_to=reply_to,
             )
 
     def _handle_all_targets_hit(self, symbol, trade):
@@ -321,10 +333,11 @@ class SignalExecutor:
         logger.info(green(f"{symbol}: all TP targets hit, total profit {total_profit:.2f} USDT"))
 
         send_telegram_message(
-            f"🎉 All targets achieved! {symbol} {trade['side']}\n"
+            f"🎉 All targets achieved! #{symbol} {trade['side']}\n"
             f"Entry {trade['entry']} - all {len(trade['tps'])} TPs hit\n"
             f"Total profit: {total_profit:.2f} USDT (avg RR {avg_rr:.2f})\n"
-            f"Duration: {duration_min:.1f} min"
+            f"Duration: {duration_min:.1f} min",
+            reply_to=trade.get("signal_msg_id"),
         )
         self.trades.close_trade(symbol)
         self.risk.record_exit(symbol)
@@ -345,10 +358,11 @@ class SignalExecutor:
                 self.client.cancel_order(symbol, order_id)
 
         send_telegram_message(
-            f"🛑 SL hit — position closed: {symbol} {trade['side']}\n"
+            f"🛑 SL hit — position closed: #{symbol} {trade['side']}\n"
             f"{legs_hit}/{len(trade['tps'])} TP legs had already filled\n"
             f"Banked profit from filled legs: {filled_profit:.2f} USDT\n"
-            f"Duration: {duration_min:.1f} min"
+            f"Duration: {duration_min:.1f} min",
+            reply_to=trade.get("signal_msg_id"),
         )
         self.trades.close_trade(symbol)
         self.risk.record_exit(symbol)

@@ -74,6 +74,17 @@ class TelegramSignalListener:
             signal = parse_signal_text(text)
 
             if signal:
+                legs = calc_rr_and_profit(signal)
+                tp_lines = "\n".join(
+                    f"  TP{i}: {leg['tp']}  RR {leg['rr']:.2f}  profit {leg['profit']:.2f} USDT"
+                    for i, leg in enumerate(legs, start=1)
+                )
+                msg_id = send_telegram_message(
+                    f"📡 Signal received: #{signal.symbol} {signal.side} @ {signal.entry}\n"
+                    f"Qty {signal.qty}  SL {signal.stop}\n"
+                    f"{tp_lines}"
+                )
+
                 signal_json = {
                     "symbol": signal.symbol,
                     "side": signal.side,
@@ -83,24 +94,14 @@ class TelegramSignalListener:
                     "tps": signal.tps,
                     "qty": signal.qty,
                     "timestamp": datetime.now().isoformat(),
-                    "source": "telegram"
+                    "source": "telegram",
+                    "msg_id": msg_id,
                 }
 
                 with open(SIGNAL_INPUT_FILE, "w") as f:
                     json.dump(signal_json, f)
 
                 logger.info(f"[OK] Signal saved: {signal.symbol} {signal.side} @ {signal.entry}")
-
-                legs = calc_rr_and_profit(signal)
-                tp_lines = "\n".join(
-                    f"  TP{i}: {leg['tp']}  RR {leg['rr']:.2f}  profit {leg['profit']:.2f} USDT"
-                    for i, leg in enumerate(legs, start=1)
-                )
-                send_telegram_message(
-                    f"📡 Signal received: {signal.symbol} {signal.side} @ {signal.entry}\n"
-                    f"Qty {signal.qty}  SL {signal.stop}\n"
-                    f"{tp_lines}"
-                )
             else:
                 logger.warning("Could not parse signal from message")
 

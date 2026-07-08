@@ -11,11 +11,15 @@ from config.settings import RISK_USD, TAKER_FEE_RATE, MIN_NET_PROFIT_MULTIPLE
 class Signal:
     """Represent a trading signal. Supports any number of take-profit levels
     (tps[0] is nearest to entry / hit first, tps[-1] is the final target)."""
-    def __init__(self, symbol, side, entry, stop, tp=None, tps=None, qty=None, timestamp=None):
+    def __init__(self, symbol, side, entry, stop, tp=None, tps=None, qty=None, timestamp=None, msg_id=None):
         self.symbol = symbol  # e.g., "BTCUSDT"
         self.side = side  # "Buy" or "Sell"
         self.entry = float(entry)
         self.stop = float(stop)
+        # Telegram message_id of the "signal received" notification, if any - carried
+        # through so later order/TP/SL notifications for this coin can reply to it and
+        # thread together instead of posting as unrelated standalone messages.
+        self.msg_id = msg_id
 
         if tps:
             self.tps = [float(t) for t in tps]
@@ -46,6 +50,7 @@ class Signal:
             "qty": self.qty,
             "timestamp": self.timestamp,
             "status": self.status,
+            "msg_id": self.msg_id,
         }
 
     def __repr__(self):
@@ -99,7 +104,8 @@ def parse_signal_text(text):
                 stop=data["stop"],
                 tp=data.get("tp"),
                 tps=data.get("tps"),
-                qty=data.get("qty")
+                qty=data.get("qty"),
+                msg_id=data.get("msg_id"),
             )
         except json.JSONDecodeError:
             pass
