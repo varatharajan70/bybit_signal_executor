@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+data/telegram_session*
+data/daily_stats.json
+.env
+data/bot_week_log.txt
+data/active_trades.json
+logs/
+bot.pid
