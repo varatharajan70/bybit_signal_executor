@@ -30,6 +30,7 @@ logging.basicConfig(
 from core.executor import SignalExecutor
 from core.notifier import send_telegram_message
 from core.colors import red, green, yellow
+from core.device_lock import DEVICE_NAME, broadcast_claim, watch_for_takeover
 from telegram_bot.listener import TelegramSignalListener, resolve_credentials
 from config.settings import DEMO_MODE, TRADING_ENV, BYBIT_URL
 
@@ -67,18 +68,39 @@ async def run_executor_only(executor):
 
 async def main_async(args):
     executor = None
+    listener = None
 
     if args.mode in ("executor", "both"):
         executor = SignalExecutor()
         executor.start()
         logger.info(green("Signal Executor started"))
 
+    broadcast_claim()
+
+    async def on_takeover(other_device):
+        logger.info(yellow(f"Newer start on '{other_device}' - stopping this instance ({DEVICE_NAME})"))
+        if executor:
+            executor.stop()
+        if listener:
+            await listener.client.disconnect()
+        send_telegram_message(f"🟡 Stopped on {DEVICE_NAME} — Bot started on {other_device} instead.")
+
+    watcher_task = asyncio.create_task(watch_for_takeover(on_takeover))
+
     if args.mode in ("telegram", "both"):
         api_id, api_hash, channel = resolve_credentials()
         listener = TelegramSignalListener(api_id, api_hash, channel)
-        await listener.listen()
-    elif executor:
-        await run_executor_only(executor)
+        work_task = asyncio.create_task(listener.listen())
+    else:
+        work_task = asyncio.create_task(run_executor_only(executor))
+
+    done, pending = await asyncio.wait({work_task, watcher_task}, return_when=asyncio.FIRST_COMPLETED)
+    for task in pending:
+        task.cancel()
+    for task in done:
+        exc = task.exception()
+        if exc and not isinstance(exc, asyncio.CancelledError):
+            raise exc
 
 
 if __name__ == "__main__":
