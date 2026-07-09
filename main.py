@@ -92,14 +92,18 @@ async def main_async(args):
 
     watcher_task = asyncio.create_task(watch_for_takeover(on_takeover))
 
+    work_tasks = []
     if args.mode in ("telegram", "both"):
         api_id, api_hash, channel = resolve_credentials()
         listener = TelegramSignalListener(api_id, api_hash, channel)
-        work_task = asyncio.create_task(listener.listen())
-    else:
-        work_task = asyncio.create_task(run_executor_only(executor))
+        work_tasks.append(asyncio.create_task(listener.listen()))
+    if args.mode in ("executor", "both"):
+        # Polls check_positions() every 60s to trail SLs (Plan A/B), detect final-TP fills,
+        # and clean up stopped-out trades. Must run alongside the listener in "both" mode -
+        # without it, open trades are never re-checked after entry.
+        work_tasks.append(asyncio.create_task(run_executor_only(executor)))
 
-    done, pending = await asyncio.wait({work_task, watcher_task}, return_when=asyncio.FIRST_COMPLETED)
+    done, pending = await asyncio.wait({*work_tasks, watcher_task}, return_when=asyncio.FIRST_COMPLETED)
     for task in pending:
         task.cancel()
     for task in done:

@@ -25,34 +25,58 @@ class TradeTracker:
         if os.path.exists(TRADE_TRACKER_FILE):
             try:
                 with open(TRADE_TRACKER_FILE, "r") as f:
-                    return json.load(f)
+                    state = json.load(f)
             except (json.JSONDecodeError, OSError):
-                pass
+                return {}
+            # Records saved before the "strategy" field existed are all old-style leg-split
+            # trades - default them so in-flight trades keep running under the logic that
+            # actually placed their exchange-side orders.
+            for trade in state.values():
+                trade.setdefault("strategy", "legs")
+            return state
         return {}
 
     def _save(self):
         with open(TRADE_TRACKER_FILE, "w") as f:
             json.dump(self._state, f)
 
-    def open_trade(self, symbol, side, entry, stop, tps, qty_total, leg_qty, tp_order_ids, signal_msg_id=None):
+    def open_trade(self, symbol, side, entry, stop, tps, qty_total, signal_msg_id=None,
+                    strategy="runner", leg_qty=None, tp_order_ids=None,
+                    exit_tp=None, exit_order_id=None, sl_stages=None):
         with _lock:
-            self._state[symbol] = {
+            record = {
+                "strategy": strategy,
                 "side": side,
                 "entry": entry,
                 "stop": stop,
                 "tps": tps,
                 "qty_total": qty_total,
-                "leg_qty": leg_qty,
-                "tp_order_ids": tp_order_ids,  # None for a leg that failed to place
-                "legs_filled": [False] * len(tps),
                 "sl_moved_to": None,
                 "opened_at": time.time(),
                 # Telegram message_id of the original "signal received" post, so later TP/SL
                 # notifications for this coin can reply to it and thread together.
                 "signal_msg_id": signal_msg_id,
             }
+            if strategy == "legs":
+                record["leg_qty"] = leg_qty
+                record["tp_order_ids"] = tp_order_ids  # None for a leg that failed to place
+                record["legs_filled"] = [False] * len(tps)
+                logger.info(f"Trade tracker: opened {symbol} with {len(tps)} TP legs")
+            else:
+                record["exit_tp"] = exit_tp
+                record["exit_order_id"] = exit_order_id
+                # sl_stages: the active risk plan's trail shape, copied onto the trade at
+                # open time (config/settings.py: SL_STAGES) so it doesn't shift mid-flight
+                # if RISK_PLAN changes later. sl_stage: index into sl_stages reached so far
+                # (0 = original stop still live). Final TP always exits full qty regardless
+                # of stage - see core/executor.py: _check_runner_trade.
+                record["sl_stages"] = sl_stages
+                record["sl_stage"] = 0
+                logger.info(
+                    f"Trade tracker: opened {symbol} (runner) - exit @ {exit_tp}"
+                )
+            self._state[symbol] = record
             self._save()
-            logger.info(f"Trade tracker: opened {symbol} with {len(tps)} TP legs")
 
     def get_trade(self, symbol):
         with _lock:
@@ -63,6 +87,16 @@ class TradeTracker:
             trade = self._state.get(symbol)
             if trade:
                 trade["legs_filled"][index] = True
+                self._save()
+
+    def mark_sl_stage(self, symbol, stage, label):
+        """Runner strategy: record that the SL was just trailed to a new stage. label is a
+        human-readable string (e.g. "breakeven" or "TP2") describing where it moved to."""
+        with _lock:
+            trade = self._state.get(symbol)
+            if trade:
+                trade["sl_stage"] = stage
+                trade["sl_moved_to"] = label
                 self._save()
 
     def update_sl_stage(self, symbol, stage):

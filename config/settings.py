@@ -63,7 +63,24 @@ else:
     _active_key, _active_secret = BYBIT_API_KEY, BYBIT_API_SECRET
 
 # --- Trading parameters ---
-RISK_USD = 2.5          # Fixed risk per trade (USD)
+# Risk plan: selects both risk-per-trade AND the runner strategy's SL-trail shape.
+# Switch via RISK_PLAN in .env - no code change needed.
+#   "A" (default) -> $2.5 risk. SL -> breakeven at TP3, SL -> TP2's price at TP4.
+#   "B"           -> $4 risk.   SL -> breakeven at TP2, SL -> TP2's price at TP3,
+#                                SL -> TP3's price at TP4.
+# Each stage tuple is (trigger TP index, SL target TP index or None=breakeven/entry),
+# 0-based against signal.tps. Stored on each trade at open time (core/trade_tracker.py)
+# so an in-flight trade keeps the shape it opened under even if RISK_PLAN changes later.
+RISK_PLANS = {
+    "A": {"risk_usd": 2.5, "sl_stages": [(2, None), (3, 1)]},          # TP3->BE, TP4->TP2
+    "B": {"risk_usd": 4.0, "sl_stages": [(1, None), (2, 1), (3, 2)]},  # TP2->BE, TP3->TP2, TP4->TP3
+}
+RISK_PLAN = os.getenv("RISK_PLAN", "A").strip().upper()
+if RISK_PLAN not in RISK_PLANS:
+    print(f"[WARN] Unknown RISK_PLAN={RISK_PLAN!r}, falling back to 'A'")
+    RISK_PLAN = "A"
+RISK_USD = RISK_PLANS[RISK_PLAN]["risk_usd"]
+SL_STAGES = RISK_PLANS[RISK_PLAN]["sl_stages"]
 LEVERAGE = 10           # ByBit futures leverage
 POSITION_MODE = "one_way"  # one_way or hedge_mode
 

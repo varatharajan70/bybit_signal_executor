@@ -17,7 +17,7 @@ from config.settings import (
     TELEGRAM_API_ID,
     TELEGRAM_API_HASH,
 )
-from core.signal_handler import parse_signal_text, calc_rr_and_profit
+from core.signal_handler import parse_signal_text, calc_runner_profit
 from core.notifier import send_telegram_message
 
 logger = logging.getLogger(__name__)
@@ -74,16 +74,22 @@ class TelegramSignalListener:
             signal = parse_signal_text(text)
 
             if signal:
-                legs = calc_rr_and_profit(signal)
-                tp_lines = "\n".join(
-                    f"  TP{i}: {leg['tp']}  RR {leg['rr']:.2f}  profit {leg['profit']:.2f} USDT"
-                    for i, leg in enumerate(legs, start=1)
+                info = calc_runner_profit(signal)
+                lines = [
+                    f"📡 Signal received: #{signal.symbol} {signal.side} @ {signal.entry}",
+                    f"Qty {signal.qty}  SL {signal.stop}  (max loss ${info['max_loss']:.2f})",
+                ]
+                for s in info["stages"]:
+                    emoji = "🔒" if s["sl_label"] == "breakeven" else "🔐"
+                    lines.append(
+                        f"{emoji} SL → {s['sl_label']} ({s['sl_price']}) @ "
+                        f"{s['trigger_label']} {s['trigger_price']}"
+                    )
+                lines.append(
+                    f"🎯 Full qty exits @ TP{len(signal.tps)} {info['exit_tp']}  "
+                    f"RR {info['rr']:.2f}  profit ${info['profit']:.2f}"
                 )
-                msg_id = send_telegram_message(
-                    f"📡 Signal received: #{signal.symbol} {signal.side} @ {signal.entry}\n"
-                    f"Qty {signal.qty}  SL {signal.stop}\n"
-                    f"{tp_lines}"
-                )
+                msg_id = send_telegram_message("\n".join(lines))
 
                 signal_json = {
                     "symbol": signal.symbol,

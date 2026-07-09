@@ -5,7 +5,7 @@ from datetime import datetime
 import json
 import re
 
-from config.settings import RISK_USD, TAKER_FEE_RATE, MIN_NET_PROFIT_MULTIPLE
+from config.settings import RISK_USD, TAKER_FEE_RATE, MIN_NET_PROFIT_MULTIPLE, SL_STAGES
 
 
 class Signal:
@@ -69,6 +69,33 @@ def calc_rr_and_profit(signal):
         profit = reward * leg_qty
         legs.append({"tp": tp, "rr": rr, "profit": profit})
     return legs
+
+
+def calc_runner_profit(signal):
+    """RR/profit for the breakeven-runner strategy: no partial exits anywhere - full qty
+    exits only at the final TP. The active risk plan's SL_STAGES only trail the stop-loss
+    (breakeven, then progressively later TP prices); they never trigger a sale."""
+    risk = abs(signal.entry - signal.stop)
+    exit_tp = signal.tps[-1]
+    reward = abs(exit_tp - signal.entry)
+    rr = reward / risk if risk > 0 else 0.0
+    stages = []
+    for trigger_idx, sl_idx in SL_STAGES:
+        if trigger_idx >= len(signal.tps):
+            continue
+        stages.append({
+            "trigger_label": f"TP{trigger_idx + 1}",
+            "trigger_price": signal.tps[trigger_idx],
+            "sl_label": "breakeven" if sl_idx is None else f"TP{sl_idx + 1}",
+            "sl_price": signal.entry if sl_idx is None else signal.tps[sl_idx],
+        })
+    return {
+        "exit_tp": exit_tp,
+        "rr": rr,
+        "profit": reward * signal.qty,
+        "max_loss": risk * signal.qty,  # == RISK_USD by construction
+        "stages": stages,
+    }
 
 
 def parse_signal_text(text):

@@ -13,7 +13,7 @@ from core.risk_manager import RiskManager
 from core.trade_tracker import TradeTracker
 from core.notifier import send_telegram_message
 from core.colors import red, green, yellow
-from config.settings import SIGNAL_INPUT_FILE, MAX_CONSECUTIVE_FAILURES
+from config.settings import SIGNAL_INPUT_FILE, MAX_CONSECUTIVE_FAILURES, SL_STAGES
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +134,7 @@ class SignalExecutor:
                     f"Order ID: {order_id}",
                     reply_to=signal.msg_id,
                 )
-                self._place_tp_legs(signal)
+                self._place_runner_exit(signal)
             else:
                 logger.error(red(f"[FAIL] Order failed: {result}"))
                 self._note_failure()
@@ -188,9 +188,37 @@ class SignalExecutor:
             stop=signal.stop,
             tps=tps,
             qty_total=signal.qty,
+            strategy="legs",
             leg_qty=leg_qty,
             tp_order_ids=tp_order_ids,
             signal_msg_id=signal.msg_id,
+        )
+
+    def _place_runner_exit(self, signal):
+        """Breakeven-runner strategy: no partial exits anywhere. The active risk plan's
+        SL_STAGES only trail the stop-loss (handled in _check_runner_trade); the FULL
+        position size exits in one shot via a single reduce-only limit order at the final TP."""
+        close_side = "Sell" if signal.side == "Buy" else "Buy"
+        exit_tp = signal.tps[-1]
+        resp = self.client.place_reduce_only_limit(signal.symbol, close_side, signal.qty, exit_tp)
+        if resp.get("retCode") == 0:
+            exit_order_id = resp.get("result", {}).get("orderId")
+        else:
+            logger.error(red(f"[FAIL] Exit order failed for {signal.symbol} @ {exit_tp}: {resp}"))
+            exit_order_id = None
+
+        self.trades.open_trade(
+            symbol=signal.symbol,
+            side=signal.side,
+            entry=signal.entry,
+            stop=signal.stop,
+            tps=signal.tps,
+            qty_total=signal.qty,
+            strategy="runner",
+            exit_tp=exit_tp,
+            exit_order_id=exit_order_id,
+            signal_msg_id=signal.msg_id,
+            sl_stages=SL_STAGES,
         )
 
     def _note_failure(self):
@@ -218,7 +246,7 @@ class SignalExecutor:
                 else:
                     logger.info(yellow("No open positions"))
 
-                tracked_symbols = self._check_tp_legs(live_symbols)
+                tracked_symbols = self._check_trades(live_symbols)
 
                 closed_symbols = self.risk.sync_open_symbols([p.get("symbol") for p in positions])
                 for symbol in closed_symbols:
@@ -251,37 +279,149 @@ class SignalExecutor:
         except Exception as e:
             logger.error(red(f"Position check error: {e}"))
 
-    def _check_tp_legs(self, live_symbols):
-        """Poll each tracked trade's pending TP leg orders for fills, react to newly
-        filled legs (SL moves, notifications), and detect full closes (all targets hit,
-        or SL hit before every leg filled). Returns the set of symbols notified this
-        round, so check_positions doesn't also send a generic close notification."""
+    def _check_trades(self, live_symbols):
+        """Poll every tracked trade and drive its lifecycle (TP hits, SL moves, close
+        notifications), dispatching per trade on its "strategy" - old "legs" trades (partial
+        exit per TP level) vs new "runner" trades (TP1 only arms breakeven, full qty exits at
+        the final TP). Returns the set of symbols notified this round, so check_positions
+        doesn't also send a generic close notification."""
         notified_closed = set()
 
         for symbol, trade in self.trades.all_trades().items():
-            newly_filled = []
-            for i, (order_id, filled) in enumerate(zip(trade["tp_order_ids"], trade["legs_filled"])):
-                if filled or not order_id:
-                    continue
-                if self.client.get_order_status(symbol, order_id) == "Filled":
-                    self.trades.mark_leg_filled(symbol, i)
-                    newly_filled.append(i)
-
-            for i in newly_filled:
-                self._handle_tp_leg_filled(symbol, trade, i)
-
-            trade = self.trades.get_trade(symbol)
-            if trade is None:
-                continue  # closed already (e.g. all-targets-hit fired above)
-
-            if all(trade["legs_filled"]):
-                self._handle_all_targets_hit(symbol, trade)
-                notified_closed.add(symbol)
-            elif symbol not in live_symbols:
-                self._handle_sl_hit(symbol, trade)
+            if trade["strategy"] == "runner":
+                closed = self._check_runner_trade(symbol, trade, live_symbols)
+            else:
+                closed = self._check_legs_trade(symbol, trade, live_symbols)
+            if closed:
                 notified_closed.add(symbol)
 
         return notified_closed
+
+    def _check_legs_trade(self, symbol, trade, live_symbols):
+        """Old strategy: qty split evenly across every TP level, each its own reduce-only
+        leg order. Returns True if the trade closed (and was notified) this round."""
+        newly_filled = []
+        for i, (order_id, filled) in enumerate(zip(trade["tp_order_ids"], trade["legs_filled"])):
+            if filled or not order_id:
+                continue
+            if self.client.get_order_status(symbol, order_id) == "Filled":
+                self.trades.mark_leg_filled(symbol, i)
+                newly_filled.append(i)
+
+        for i in newly_filled:
+            self._handle_tp_leg_filled(symbol, trade, i)
+
+        trade = self.trades.get_trade(symbol)
+        if trade is None:
+            return True  # closed already (e.g. all-targets-hit fired above)
+
+        if all(trade["legs_filled"]):
+            self._handle_all_targets_hit(symbol, trade)
+            return True
+        elif symbol not in live_symbols:
+            self._handle_sl_hit(symbol, trade)
+            return True
+        return False
+
+    def _maybe_advance_sl(self, symbol, trade, new_stage, trigger, sl_price, trigger_label, sl_label):
+        """Runner strategy: move the SL to sl_price once price crosses trigger, and record
+        the new sl_stage. No qty ever exits here - only the stop-loss price moves."""
+        price = self.client.get_ticker(symbol)
+        if price is None:
+            return
+        crossed = price >= trigger if trade["side"] == "Buy" else price <= trigger
+        if not crossed:
+            return
+        self.client.set_stop_loss(symbol, sl_price)
+        self.trades.mark_sl_stage(symbol, new_stage, sl_label)
+        emoji = "🔒" if sl_label == "breakeven" else "🔐"
+        logger.info(green(
+            f"{symbol}: {trigger_label} {trigger} reached, SL moved to {sl_label} ({sl_price})"
+        ))
+        send_telegram_message(
+            f"{emoji} SL → {sl_label} ({sl_price}): #{symbol} reached {trigger_label} {trigger}",
+            reply_to=trade.get("signal_msg_id"),
+        )
+
+    def _check_runner_trade(self, symbol, trade, live_symbols):
+        """Breakeven-runner strategy: no partial exits anywhere. The active risk plan's
+        SL_STAGES trail the SL through progressively later TP prices (breakeven, then
+        further). Full qty exits in one shot via a single reduce-only limit order at the
+        final TP. Returns True if the trade closed (and was notified) this round."""
+        tps = trade["tps"]
+        sl_stages = trade["sl_stages"]
+        stage = trade["sl_stage"]
+        for new_stage in range(len(sl_stages), stage, -1):
+            if stage >= new_stage:
+                continue
+            trigger_idx, sl_idx = sl_stages[new_stage - 1]
+            if trigger_idx >= len(tps):
+                continue  # signal has fewer TPs than this plan's stage needs - skip it
+            trigger = tps[trigger_idx]
+            sl_price = trade["entry"] if sl_idx is None else tps[sl_idx]
+            self._maybe_advance_sl(
+                symbol, trade, new_stage, trigger, sl_price,
+                trigger_label=f"TP{trigger_idx + 1}",
+                sl_label="breakeven" if sl_idx is None else f"TP{sl_idx + 1}",
+            )
+            trade = self.trades.get_trade(symbol)
+            stage = trade["sl_stage"]
+
+        exit_order_id = trade["exit_order_id"]
+        status = self.client.get_order_status(symbol, exit_order_id) if exit_order_id else None
+
+        if status == "Filled":
+            profit = abs(trade["exit_tp"] - trade["entry"]) * trade["qty_total"]
+            risk = abs(trade["entry"] - trade["stop"])
+            rr = profit / (risk * trade["qty_total"]) if risk > 0 else 0.0
+            duration_min = (time.time() - trade["opened_at"]) / 60
+            logger.info(green(f"{symbol}: final target hit, profit {profit:.2f} USDT"))
+            send_telegram_message(
+                f"🎉 Final target hit! #{symbol} {trade['side']} @ {trade['exit_tp']}\n"
+                f"Full qty profit: {profit:.2f} USDT (RR {rr:.2f})\n"
+                f"Duration: {duration_min:.1f} min",
+                reply_to=trade.get("signal_msg_id"),
+            )
+            self.trades.close_trade(symbol)
+            self.risk.record_exit(symbol)
+            return True
+
+        if symbol not in live_symbols:
+            stage = trade["sl_stage"]
+            duration_min = (time.time() - trade["opened_at"]) / 60
+            if exit_order_id:
+                self.client.cancel_order(symbol, exit_order_id)
+
+            if stage == 0:
+                loss = abs(trade["entry"] - trade["stop"]) * trade["qty_total"]
+                logger.info(red(f"{symbol}: SL hit, position closed"))
+                msg = f"🛑 SL hit: #{symbol} {trade['side']}\nLoss: {loss:.2f} USDT"
+            else:
+                trigger_idx, sl_idx = sl_stages[stage - 1]
+                sl_price = trade["entry"] if sl_idx is None else tps[sl_idx]
+                if sl_idx is None:
+                    logger.info(green(f"{symbol}: breakeven hit, position closed"))
+                    msg = (
+                        f"🔒 Breakeven stop hit: #{symbol} {trade['side']}\n"
+                        f"No loss - exited at entry ({sl_price})"
+                    )
+                else:
+                    pnl = abs(sl_price - trade["entry"]) * trade["qty_total"]
+                    logger.info(green(f"{symbol}: locked-in profit stop hit, position closed"))
+                    msg = (
+                        f"💰 Locked-in profit stop hit: #{symbol} {trade['side']}\n"
+                        f"Exited at TP{sl_idx + 1} ({sl_price}) - profit: {pnl:.2f} USDT"
+                    )
+
+            send_telegram_message(
+                msg + f"\nDuration: {duration_min:.1f} min",
+                reply_to=trade.get("signal_msg_id"),
+            )
+            self.trades.close_trade(symbol)
+            self.risk.record_exit(symbol)
+            return True
+
+        return False
 
     def _handle_tp_leg_filled(self, symbol, trade, index):
         """React to one TP leg filling. Works for any number of TP levels:
