@@ -15,6 +15,7 @@ Usage:
 import argparse
 import asyncio
 import logging
+import signal
 import sys
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -114,7 +115,16 @@ async def main_async(args):
     return state["took_over"]
 
 
+def _handle_sigterm(signum, frame):
+    # stop.sh sends SIGTERM (plain `kill $PID`), not SIGINT - without this, Python's
+    # default SIGTERM handling terminates immediately and skips the except/finally below
+    # entirely, so the "Bot stopped" notification never fires. Convert it into the same
+    # KeyboardInterrupt path Ctrl+C already uses so shutdown is handled identically either way.
+    raise KeyboardInterrupt()
+
+
 if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, _handle_sigterm)
     print_startup_banner()
     args = parse_args()
     send_telegram_message(
