@@ -8,6 +8,11 @@
 # Uses getChat's pinned_message rather than getUpdates: a bot never receives its own
 # sendMessage calls back as incoming updates, so getUpdates can't see our own claims.
 # Reading the pinned message is a plain, stateless poll that sidesteps that entirely.
+#
+# The claim message is only ever sent+pinned once (the very first time this feature
+# runs); every later claim just edits that same message's text in place. This keeps the
+# chat free of a growing pile of "__CLAIM__ ..." posts - there's a single pinned line
+# that gets silently updated, not a new message per device start.
 
 import asyncio
 import logging
@@ -39,25 +44,50 @@ def _parse_claim(text):
         return None
 
 
+def _get_pinned_claim_id():
+    resp = requests.get(f"{_API_BASE}/getChat", params={"chat_id": CHAT_ID}, timeout=10)
+    resp.raise_for_status()
+    pinned = resp.json().get("result", {}).get("pinned_message")
+    if pinned and (pinned.get("text") or "").startswith(_CLAIM_PREFIX):
+        return pinned["message_id"]
+    return None
+
+
 def broadcast_claim():
-    """Announce this instance and pin the claim so other devices can see it. Call once
-    at startup. Best-effort - a notification hiccup must never block trading."""
+    """Announce this instance. Call once at startup. Best-effort - a notification
+    hiccup must never block trading. Silent and non-spammy: edits the existing pinned
+    claim message in place if one exists, only sends+pins a brand new message the very
+    first time this feature is ever used."""
     global _claim_time
     _claim_time = time.time()
     if not BOT_TOKEN or not CHAT_ID:
         return
     text = f"{_CLAIM_PREFIX} {DEVICE_NAME} {_claim_time}"
     try:
-        resp = requests.post(
-            f"{_API_BASE}/sendMessage", data={"chat_id": CHAT_ID, "text": text}, timeout=10
-        )
-        resp.raise_for_status()
-        message_id = resp.json()["result"]["message_id"]
-        requests.post(
-            f"{_API_BASE}/pinChatMessage",
-            data={"chat_id": CHAT_ID, "message_id": message_id, "disable_notification": True},
-            timeout=10,
-        )
+        existing_id = _get_pinned_claim_id()
+        if existing_id:
+            resp = requests.post(
+                f"{_API_BASE}/editMessageText",
+                data={"chat_id": CHAT_ID, "message_id": existing_id, "text": text},
+                timeout=10,
+            )
+            # "message is not modified" (near-impossible since the timestamp always
+            # changes, but harmless either way) is the only expected non-200 case here.
+            if resp.status_code != 200:
+                logger.warning(f"device_lock edit claim failed: {resp.text[:200]}")
+        else:
+            resp = requests.post(
+                f"{_API_BASE}/sendMessage",
+                data={"chat_id": CHAT_ID, "text": text, "disable_notification": True},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            message_id = resp.json()["result"]["message_id"]
+            requests.post(
+                f"{_API_BASE}/pinChatMessage",
+                data={"chat_id": CHAT_ID, "message_id": message_id, "disable_notification": True},
+                timeout=10,
+            )
     except Exception as e:
         logger.warning(f"device_lock broadcast_claim error: {e}")
 

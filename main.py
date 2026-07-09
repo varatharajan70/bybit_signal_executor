@@ -69,6 +69,7 @@ async def run_executor_only(executor):
 async def main_async(args):
     executor = None
     listener = None
+    state = {"took_over": False}
 
     if args.mode in ("executor", "both"):
         executor = SignalExecutor()
@@ -78,12 +79,16 @@ async def main_async(args):
     broadcast_claim()
 
     async def on_takeover(other_device):
+        # Another device just started and is taking over - this is a routine handoff,
+        # not a real stop, so no Telegram message here (that's what confused the user:
+        # seeing "Bot stopped" made it look like the whole bot died). The overall
+        # running/stopped status the user cares about is unaffected by a handoff.
+        state["took_over"] = True
         logger.info(yellow(f"Newer start on '{other_device}' - stopping this instance ({DEVICE_NAME})"))
         if executor:
             executor.stop()
         if listener:
             await listener.client.disconnect()
-        send_telegram_message(f"🟡 Stopped on {DEVICE_NAME} — Bot started on {other_device} instead.")
 
     watcher_task = asyncio.create_task(watch_for_takeover(on_takeover))
 
@@ -102,6 +107,8 @@ async def main_async(args):
         if exc and not isinstance(exc, asyncio.CancelledError):
             raise exc
 
+    return state["took_over"]
+
 
 if __name__ == "__main__":
     print_startup_banner()
@@ -110,9 +117,13 @@ if __name__ == "__main__":
         f"🟢 Bot started (mode={args.mode}, env={TRADING_ENV.upper()}, "
         f"{'DEMO simulation' if DEMO_MODE else 'REAL network calls'})"
     )
+    took_over = False
     try:
-        asyncio.run(main_async(args))
+        took_over = asyncio.run(main_async(args))
     except KeyboardInterrupt:
         logger.info(yellow("Shutting down..."))
     finally:
-        send_telegram_message("🔴 Bot stopped")
+        # Only report a real stop (Ctrl+C, crash) - not a handoff where another device
+        # already took over, since the bot is still running (just elsewhere).
+        if not took_over:
+            send_telegram_message("🔴 Bot stopped")
