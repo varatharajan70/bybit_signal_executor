@@ -197,14 +197,23 @@ class SignalExecutor:
     def _place_runner_exit(self, signal):
         """Breakeven-runner strategy: no partial exits anywhere. The active risk plan's
         SL_STAGES only trail the stop-loss (handled in _check_runner_trade); the FULL
-        position size exits in one shot via a single reduce-only limit order at the final TP."""
+        position size exits in one shot via a single reduce-only limit order at the final TP.
+
+        The entry order just placed may still be an unfilled limit order (not yet a live
+        position), in which case Bybit rejects a reduce-only order against it (retCode
+        110017, "current position is zero"). That's expected, not fatal: exit_order_id is
+        left None here and _check_runner_trade retries this same placement once the
+        position is confirmed live."""
         close_side = "Sell" if signal.side == "Buy" else "Buy"
         exit_tp = signal.tps[-1]
         resp = self.client.place_reduce_only_limit(signal.symbol, close_side, signal.qty, exit_tp)
         if resp.get("retCode") == 0:
             exit_order_id = resp.get("result", {}).get("orderId")
         else:
-            logger.error(red(f"[FAIL] Exit order failed for {signal.symbol} @ {exit_tp}: {resp}"))
+            logger.warning(yellow(
+                f"[RETRY] Exit order not placed yet for {signal.symbol} @ {exit_tp} (entry likely "
+                f"still unfilled): {resp} - will retry once the position is live"
+            ))
             exit_order_id = None
 
         self.trades.open_trade(
@@ -343,11 +352,35 @@ class SignalExecutor:
             reply_to=trade.get("signal_msg_id"),
         )
 
+    def _retry_place_runner_exit(self, symbol, trade):
+        """Retry the reduce-only full-qty exit order for a runner trade whose entry order
+        hadn't filled yet when execute_trade() first tried to place it. Called once the
+        position is confirmed live (in live_symbols)."""
+        close_side = "Sell" if trade["side"] == "Buy" else "Buy"
+        resp = self.client.place_reduce_only_limit(symbol, close_side, trade["qty_total"], trade["exit_tp"])
+        if resp.get("retCode") == 0:
+            exit_order_id = resp.get("result", {}).get("orderId")
+            self.trades.set_exit_order(symbol, exit_order_id)
+            logger.info(green(f"{symbol}: exit order placed (retry) @ {trade['exit_tp']}"))
+            return exit_order_id
+        logger.error(red(f"[FAIL] Exit order retry failed for {symbol} @ {trade['exit_tp']}: {resp}"))
+        return None
+
     def _check_runner_trade(self, symbol, trade, live_symbols):
         """Breakeven-runner strategy: no partial exits anywhere. The active risk plan's
         SL_STAGES trail the SL through progressively later TP prices (breakeven, then
         further). Full qty exits in one shot via a single reduce-only limit order at the
         final TP. Returns True if the trade closed (and was notified) this round."""
+        if trade["exit_order_id"] is None:
+            if symbol not in live_symbols:
+                # Entry order (a limit order) hasn't filled yet - there's nothing to check.
+                # Crucially, this must NOT be read as "SL hit": the trade was never live to
+                # begin with, so "not in live_symbols" here just means "still waiting".
+                return False
+            if self._retry_place_runner_exit(symbol, trade) is None:
+                return False  # still couldn't place it - try again next cycle
+            trade = self.trades.get_trade(symbol)
+
         tps = trade["tps"]
         sl_stages = trade["sl_stages"]
         stage = trade["sl_stage"]

@@ -89,6 +89,18 @@ class TradeTracker:
                 trade["legs_filled"][index] = True
                 self._save()
 
+    def set_exit_order(self, symbol, exit_order_id):
+        """Runner strategy: record the exit order once it's actually placed. Used both at
+        open time and as a retry - the entry may still be an unfilled limit order when
+        execute_trade() first tries, so the reduce-only exit order placement can fail
+        (Bybit rejects it against a zero position) and gets retried once the position is
+        confirmed live (core/executor.py: _check_runner_trade)."""
+        with _lock:
+            trade = self._state.get(symbol)
+            if trade:
+                trade["exit_order_id"] = exit_order_id
+                self._save()
+
     def mark_sl_stage(self, symbol, stage, label):
         """Runner strategy: record that the SL was just trailed to a new stage. label is a
         human-readable string (e.g. "breakeven" or "TP2") describing where it moved to."""
