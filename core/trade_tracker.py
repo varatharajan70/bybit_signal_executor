@@ -42,7 +42,7 @@ class TradeTracker:
 
     def open_trade(self, symbol, side, entry, stop, tps, qty_total, signal_msg_id=None,
                     strategy="runner", leg_qty=None, tp_order_ids=None,
-                    exit_tp=None, exit_order_id=None, sl_stages=None):
+                    exit_tp=None, exit_order_id=None, sl_stages=None, entry_order_id=None):
         with _lock:
             record = {
                 "strategy": strategy,
@@ -72,6 +72,10 @@ class TradeTracker:
                 # of stage - see core/executor.py: _check_runner_trade.
                 record["sl_stages"] = sl_stages
                 record["sl_stage"] = 0
+                # Entry order id, so a later check can tell "entry still unfilled" apart
+                # from "entry filled and the position already closed" when the exit order
+                # was never placed - see core/executor.py: _check_runner_trade.
+                record["entry_order_id"] = entry_order_id
                 logger.info(
                     f"Trade tracker: opened {symbol} (runner) - exit @ {exit_tp}"
                 )
