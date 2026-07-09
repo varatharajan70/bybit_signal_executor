@@ -227,7 +227,7 @@ class SignalExecutor:
                     logger.info(green(f"Position closed: {symbol}"))
                     send_telegram_message(f"🔔 Position closed: #{symbol}")
 
-                fixes = self.client.check_and_fix_protection()
+                fixes = self.client.check_and_fix_protection(skip_tp_symbols=set(self.trades.all_trades().keys()))
                 for fix in fixes:
                     if fix["errors"]:
                         logger.error(red(f"[PROTECTION] {fix['symbol']}: failed to fix {fix['fixed']} - {fix['errors']}"))

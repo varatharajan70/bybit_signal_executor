@@ -380,11 +380,18 @@ class ByBitClient:
         result = self._request("POST", "/v5/position/trading-stop", data=data)
         return result
 
-    def check_and_fix_protection(self, symbol=None):
-        """Reconcile that open positions actually carry a stopLoss/takeProfit/trailingStop.
-        Placing an order with SL/TP attached and trusting the retCode isn't enough - ByBit can
-        accept the order but drop the protection fields silently. This re-checks live position
-        state and re-applies missing protection so a position never runs naked.
+    def check_and_fix_protection(self, symbol=None, skip_tp_symbols=None):
+        """Reconcile that open positions actually carry a stopLoss (and, for positions not
+        managed leg-by-leg, a takeProfit). Placing an order with SL/TP attached and trusting
+        the retCode isn't enough - ByBit can accept the order but drop the protection fields
+        silently. This re-checks live position state and re-applies a missing stopLoss so a
+        position never runs naked.
+
+        skip_tp_symbols: symbols whose take-profit is intentionally handled via separate
+        reduce-only TP-leg orders (core/trade_tracker.py) rather than the position's takeProfit
+        field. For those, a "missing" takeProfit is expected, not dropped protection - patching
+        in a generic default TP here would silently override the real multi-leg TP plan with an
+        unrelated price.
 
         Returns a list of {symbol, side, fixed: [...], errors: [...]} for positions that needed
         a fix; empty list means everything already had protection in place.
@@ -392,6 +399,7 @@ class ByBitClient:
         if self.demo_mode:
             return []
 
+        skip_tp_symbols = skip_tp_symbols or set()
         result = self.get_positions(symbol=symbol)
         if result.get("retCode") != 0:
             return []
@@ -406,9 +414,9 @@ class ByBitClient:
             avg_price = float(pos.get("avgPrice", 0) or 0)
             has_sl = float(pos.get("stopLoss", 0) or 0) > 0
             has_tp = float(pos.get("takeProfit", 0) or 0) > 0
-            has_trailing = float(pos.get("trailingStop", 0) or 0) > 0
+            tp_managed_by_legs = sym in skip_tp_symbols
 
-            if has_sl and has_tp and has_trailing:
+            if has_sl and (has_tp or tp_managed_by_legs):
                 continue
             if avg_price <= 0:
                 continue
@@ -418,15 +426,16 @@ class ByBitClient:
             tick = info["tickSize"] if info else 0.0001
 
             data = {"category": "linear", "symbol": sym}
-            # Reconstruct missing SL/TP at a conservative default distance (RISK_USD-style 2%)
-            # only when neither was ever set - we do not overwrite an intentionally different
-            # SL/TP that the signal set, only fields that are truly missing (0).
+            # Reconstruct a missing SL at a conservative default distance (2%) only when it was
+            # never set - we do not overwrite an intentionally different SL that the signal set,
+            # only a field that's truly missing (0). TP is only reconstructed for positions that
+            # aren't already managed via TP-leg orders.
             if not has_sl:
                 default_stop_pct = 0.02
                 sl = avg_price * (1 - default_stop_pct) if side == "Buy" else avg_price * (1 + default_stop_pct)
                 data["stopLoss"] = str(self._round_to_step(sl, tick))
                 entry["fixed"].append("stopLoss")
-            if not has_tp:
+            if not has_tp and not tp_managed_by_legs:
                 default_tp_pct = 0.03
                 tp = avg_price * (1 + default_tp_pct) if side == "Buy" else avg_price * (1 - default_tp_pct)
                 data["takeProfit"] = str(self._round_to_step(tp, tick))
