@@ -13,7 +13,7 @@ from core.risk_manager import RiskManager
 from core.trade_tracker import TradeTracker
 from core.notifier import send_telegram_message
 from core.colors import red, green, yellow
-from config.settings import SIGNAL_INPUT_FILE, MAX_CONSECUTIVE_FAILURES, SL_STAGES, LEVERAGE
+from config.settings import SIGNAL_INPUT_FILE, MAX_CONSECUTIVE_FAILURES, SL_STAGES
 
 logger = logging.getLogger(__name__)
 
@@ -119,10 +119,13 @@ class SignalExecutor:
             logger.info(yellow(f"Executing: {signal.symbol} {signal.side} @ {signal.entry}"))
             logger.info(yellow(f"  Qty: {signal.qty}, Stop: {signal.stop}, TPs: {signal.tps}"))
 
-            lev_result = self.client.set_leverage(signal.symbol, LEVERAGE)
+            stop_pct = abs(signal.entry - signal.stop) / signal.entry
+            leverage = self.client.calc_safe_leverage(signal.symbol, stop_pct)
+            logger.info(yellow(f"{signal.symbol}: using {leverage}x leverage (stop {stop_pct*100:.2f}%)"))
+            lev_result = self.client.set_leverage(signal.symbol, leverage)
             if lev_result.get("retCode") != 0:
                 logger.warning(yellow(
-                    f"{signal.symbol}: could not set leverage to {LEVERAGE}x - "
+                    f"{signal.symbol}: could not set leverage to {leverage}x - "
                     f"{lev_result} - proceeding with whatever leverage is already set"
                 ))
 

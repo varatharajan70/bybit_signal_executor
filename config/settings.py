@@ -81,7 +81,19 @@ if RISK_PLAN not in RISK_PLANS:
     RISK_PLAN = "A"
 RISK_USD = RISK_PLANS[RISK_PLAN]["risk_usd"]
 SL_STAGES = RISK_PLANS[RISK_PLAN]["sl_stages"]
-LEVERAGE = 10           # ByBit futures leverage
+LEVERAGE = 10           # Fallback leverage, only used if per-trade calculation (below) can't
+                        # get the data it needs (e.g. instrument/risk-limit lookup fails).
+
+# Leverage is calculated per-trade (core/bybit_client.py: calc_safe_leverage), not fixed, so
+# a tight-stop signal doesn't waste margin at a low leverage and a wide-stop signal doesn't
+# get liquidated before its own stop-loss ever triggers. For a given signal's stop distance,
+# the highest leverage is chosen such that ByBit's liquidation price still stays at least
+# LEVERAGE_SAFETY_FACTOR times further away than the signal's own stop - so the strategy's
+# stop-loss always fires first, with headroom for slippage/fees. Also capped at
+# MAX_LEVERAGE_CEILING regardless of how tight the stop is, and at the symbol's own exchange
+# max leverage.
+LEVERAGE_SAFETY_FACTOR = 2.0
+MAX_LEVERAGE_CEILING = 25
 POSITION_MODE = "one_way"  # one_way or hedge_mode
 
 # --- Risk limits (executor-side guard rails, enforced by core/risk_manager.py) ---

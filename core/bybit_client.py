@@ -13,6 +13,8 @@ from config.settings import (
     BYBIT_URL,
     DEMO_MODE,
     LEVERAGE,
+    LEVERAGE_SAFETY_FACTOR,
+    MAX_LEVERAGE_CEILING,
     TRADING_ENV,
 )
 from core.colors import red, green, yellow
@@ -111,7 +113,7 @@ class ByBitClient:
             return {"retCode": -1, "retMsg": str(e)}
 
     def get_instrument_info(self, symbol):
-        """Fetch qty step, min qty, and tick size for a symbol."""
+        """Fetch qty step, min qty, tick size, and max leverage for a symbol."""
         params = {"category": "linear", "symbol": symbol}
         result = self._request("GET", "/v5/market/instruments-info", params=params)
         if result.get("retCode") == 0:
@@ -119,12 +121,51 @@ class ByBitClient:
             if items:
                 lot = items[0].get("lotSizeFilter", {})
                 price_filter = items[0].get("priceFilter", {})
+                leverage_filter = items[0].get("leverageFilter", {})
                 return {
                     "minOrderQty": float(lot.get("minOrderQty", 0.001)),
                     "qtyStep": float(lot.get("qtyStep", 0.001)),
                     "tickSize": float(price_filter.get("tickSize", 0.0001)),
+                    "maxLeverage": float(leverage_filter.get("maxLeverage", 0)) or None,
                 }
         return None
+
+    def get_maintenance_margin_rate(self, symbol):
+        """Lowest-tier (smallest position size) maintenance margin rate for a symbol, used
+        to estimate how close ByBit's liquidation price sits to the entry at a given
+        leverage. Returns None if it can't be determined - callers should fall back to a
+        conservative estimate rather than assume 0."""
+        result = self._request("GET", "/v5/market/risk-limit", params={"category": "linear", "symbol": symbol})
+        if result.get("retCode") == 0:
+            items = result.get("result", {}).get("list", [])
+            if items:
+                return float(items[0].get("maintenanceMargin", 0)) or None
+        return None
+
+    def calc_safe_leverage(self, symbol, stop_pct):
+        """Pick the highest leverage such that ByBit's liquidation price still stays at
+        least LEVERAGE_SAFETY_FACTOR times further from entry than this trade's own
+        stop-loss distance (stop_pct) - so the strategy's stop always fires before the
+        exchange would force-liquidate, with headroom for slippage/fees. Falls back to the
+        fixed LEVERAGE setting if instrument/risk-limit data can't be fetched.
+
+        Liquidation distance for isolated margin is approximately (1/leverage - maintenance
+        margin rate) - solving that for the max leverage that keeps liquidation distance >=
+        LEVERAGE_SAFETY_FACTOR * stop_pct gives:
+            leverage <= 1 / (LEVERAGE_SAFETY_FACTOR * stop_pct + maintenance_margin_rate)
+        """
+        if self.demo_mode:
+            return LEVERAGE
+        info = self.get_instrument_info(symbol)
+        mmr = self.get_maintenance_margin_rate(symbol)
+        if not info or mmr is None or stop_pct <= 0:
+            return LEVERAGE
+
+        raw_leverage = 1.0 / (LEVERAGE_SAFETY_FACTOR * stop_pct + mmr)
+        symbol_max = info.get("maxLeverage") or LEVERAGE
+        leverage = min(raw_leverage, symbol_max, MAX_LEVERAGE_CEILING)
+        leverage = max(leverage, 1.0)
+        return round(leverage, 2)
 
     def _round_to_step(self, value, step):
         """Round value to the nearest valid step (qtyStep/tickSize from the exchange).
