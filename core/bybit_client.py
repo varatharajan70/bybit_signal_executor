@@ -232,7 +232,14 @@ class ByBitClient:
             "orderType": "Limit",
             "qty": str(qty),
             "price": str(price),
-            "timeInForce": "PostOnly",
+            # GTC, not PostOnly: still a limit order (never fills worse than `price`), but
+            # won't be hard-rejected if the market has already reached/passed the entry by
+            # the time this posts - it just fills immediately instead. Signal validation
+            # already assumes worst-case taker fees on both entry and exit (TP/SL legs are
+            # plain GTC limits too, so they can already take liquidity), so this doesn't
+            # change the profitability math - it only stops fast-moving signals from being
+            # rejected outright with no position opened at all.
+            "timeInForce": "GTC",
         }
 
         if stop_price:
