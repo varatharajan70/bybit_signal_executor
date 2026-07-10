@@ -277,10 +277,25 @@ class SignalExecutor:
 
                 tracked_symbols = self._check_trades(live_symbols)
 
-                closed_symbols = self.risk.sync_open_symbols([p.get("symbol") for p in positions])
+                # A symbol counts as "still open" for risk-manager purposes if it's either a
+                # live position OR still has a pending trade_tracker record (e.g. entry order
+                # placed but not filled yet) - otherwise sync_open_symbols would drop it from
+                # open_symbols the moment it's not live, wrongly allowing a duplicate signal
+                # for the same symbol to pass the "already have an open position" re-entry
+                # check while the original entry order is still resting on the exchange.
+                still_open_symbols = live_symbols | set(self.trades.all_trades().keys())
+                closed_symbols = self.risk.sync_open_symbols(still_open_symbols)
                 for symbol in closed_symbols:
                     if symbol in tracked_symbols:
                         continue  # already notified with full detail by _check_tp_legs
+                    if self.trades.get_trade(symbol) is not None:
+                        # risk_manager marks a symbol "open" as soon as its entry order is
+                        # placed, not once it fills - so a still-resting, never-yet-filled
+                        # entry looks identical to a just-closed position here (tracked but
+                        # not live). trade_tracker still holding a record for it means
+                        # _check_trades looked and correctly decided it's not actually closed
+                        # yet (e.g. entry order still "New") - don't misreport that as closed.
+                        continue
                     logger.info(green(f"Position closed: {symbol}"))
                     send_telegram_message(f"🔔 Position closed: #{symbol}")
 
