@@ -13,7 +13,7 @@ from core.risk_manager import RiskManager
 from core.trade_tracker import TradeTracker
 from core.notifier import send_telegram_message
 from core.colors import red, green, yellow
-from config.settings import SIGNAL_INPUT_FILE, MAX_CONSECUTIVE_FAILURES, SL_STAGES
+from config.settings import SIGNAL_INPUT_FILE, MAX_CONSECUTIVE_FAILURES, SL_STAGES, LEVERAGE
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +118,13 @@ class SignalExecutor:
         try:
             logger.info(yellow(f"Executing: {signal.symbol} {signal.side} @ {signal.entry}"))
             logger.info(yellow(f"  Qty: {signal.qty}, Stop: {signal.stop}, TPs: {signal.tps}"))
+
+            lev_result = self.client.set_leverage(signal.symbol, LEVERAGE)
+            if lev_result.get("retCode") != 0:
+                logger.warning(yellow(
+                    f"{signal.symbol}: could not set leverage to {LEVERAGE}x - "
+                    f"{lev_result} - proceeding with whatever leverage is already set"
+                ))
 
             result = self.client.place_order(
                 symbol=signal.symbol,
@@ -239,7 +246,10 @@ class SignalExecutor:
 
     def _note_failure(self):
         self.consecutive_failures += 1
-        if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+        # Only fire once when crossing the threshold, not on every failure after it - this
+        # is meant to be a one-time alert, not a critical-level log line per signal for the
+        # rest of the run.
+        if self.consecutive_failures == MAX_CONSECUTIVE_FAILURES:
             logger.critical(red(
                 f"{self.consecutive_failures} consecutive trade execution failures - "
                 "check API connectivity/credentials/margin. Executor is still running "
