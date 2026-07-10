@@ -126,20 +126,23 @@ class RiskManager:
                 self._save()
                 logger.info(f"Recorded exit for {symbol} - open positions: {len(open_symbols)}")
 
-    def sync_open_symbols(self, live_symbols):
-        """Reconcile tracked open_symbols against the exchange's actual open positions
-        (from get_positions()). Corrects drift from a missed record_exit call, a crash,
-        or a position closed outside this bot (manually, or via SL/TP fill).
+    def sync_open_symbols(self, still_open_symbols):
+        """Reconcile tracked open_symbols against symbols that are still genuinely "open" -
+        either a live exchange position, or a signal still pending (e.g. entry order not
+        filled yet) per the caller (core/executor.py passes live positions UNION
+        trade_tracker's still-tracked symbols, precisely so a pending-but-unfilled entry
+        isn't mistaken for "closed"). Corrects drift from a missed record_exit call, a
+        crash, or a position closed outside this bot (manually, or via SL/TP fill).
 
-        Returns the set of symbols that were tracked as open but are no longer live -
-        i.e. positions that just closed, for notification purposes."""
+        Returns the set of symbols that were tracked as open but are no longer - i.e.
+        positions that actually just closed, for notification purposes."""
         with _lock:
-            live_set = set(live_symbols)
+            still_open_set = set(still_open_symbols)
             tracked_set = set(self._state.get("open_symbols", []))
-            closed = tracked_set - live_set
-            if live_set != tracked_set:
-                logger.info(f"Reconciling open positions: tracked={tracked_set} live={live_set}")
-                self._state["open_symbols"] = sorted(live_set)
+            closed = tracked_set - still_open_set
+            if still_open_set != tracked_set:
+                logger.info(f"Reconciling open positions: tracked={tracked_set} still_open={still_open_set}")
+                self._state["open_symbols"] = sorted(still_open_set)
                 self._save()
             return closed
 
