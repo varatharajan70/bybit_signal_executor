@@ -323,6 +323,20 @@ class SignalExecutor:
         except Exception as e:
             logger.error(red(f"Position check error: {e}"))
 
+    def _position_still_open(self, symbol):
+        """Fresh, targeted re-check for one symbol - used before declaring a trade closed
+        via its stop-loss because it was absent from live_symbols. live_symbols is a single
+        batch snapshot taken once per check_positions() poll; it can be stale or racy right
+        after entry (or on a transient API hiccup), and trusting it alone would falsely
+        declare "SL hit", detach tracking from a position that's actually still open, and
+        free up its risk-manager slot for a duplicate entry. On an API error, assume still
+        open rather than risk a false SL-hit."""
+        result = self.client.get_positions(symbol)
+        if result.get("retCode") != 0:
+            return True
+        positions = result.get("result", {}).get("list", [])
+        return any(float(p.get("size", 0) or 0) > 0 for p in positions)
+
     def _check_trades(self, live_symbols):
         """Poll every tracked trade and drive its lifecycle (TP hits, SL moves, close
         notifications), dispatching per trade on its "strategy" - old "legs" trades (partial
@@ -363,6 +377,8 @@ class SignalExecutor:
             self._handle_all_targets_hit(symbol, trade)
             return True
         elif symbol not in live_symbols:
+            if self._position_still_open(symbol):
+                return False  # stale/racy snapshot this poll - still open, recheck next cycle
             self._handle_sl_hit(symbol, trade)
             return True
         return False
@@ -469,6 +485,8 @@ class SignalExecutor:
             return True
 
         if symbol not in live_symbols:
+            if self._position_still_open(symbol):
+                return False  # stale/racy snapshot this poll - still open, recheck next cycle
             if exit_order_id:
                 self.client.cancel_order(symbol, exit_order_id)
             return self._close_runner_stopped(symbol, trade)
