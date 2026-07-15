@@ -11,6 +11,7 @@ from core.bybit_client import ByBitClient
 from core.signal_handler import parse_signal_text, validate_signal
 from core.risk_manager import RiskManager
 from core.trade_tracker import TradeTracker
+from core.trade_ledger import record_signal_trade
 from core.notifier import send_telegram_message
 from core.colors import red, green, yellow
 from config.settings import SIGNAL_INPUT_FILE, MAX_CONSECUTIVE_FAILURES, SL_STAGES
@@ -143,6 +144,7 @@ class SignalExecutor:
                 logger.info(green(f"[OK] Order placed: {order_id}"))
                 logger.info(green(f"  Details: {result}"))
                 self.risk.record_entry(signal.symbol)
+                record_signal_trade(signal.symbol, signal.side, signal.entry, order_id)
                 self.consecutive_failures = 0
                 send_telegram_message(
                     f"✅ Order placed: #{signal.symbol} {signal.side} @ {signal.entry}\n"

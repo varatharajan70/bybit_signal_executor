@@ -8,3 +8,7 @@ data/bot_week_log.txt
 data/active_trades.json
 logs/
 bot.pid
+data/signal_trades.jsonl
+reports/
+scratch_pnl.py
+.claude/
