@@ -14,10 +14,12 @@
 
 import csv
 import os
+import sys
 import time
 
 from core.bybit_client import ByBitClient
 from core.trade_ledger import signal_symbols
+from core.notifier import send_telegram_message
 from config.settings import BASE_DIR
 
 REPORTS_DIR = os.path.join(BASE_DIR, "reports")
@@ -130,6 +132,51 @@ def main():
           f"{wins}W/{len(trade_records)-wins}L | cumulative {cumulative:+.2f}")
     print(f"  -> {TRADES_CSV}")
     print(f"  -> {DAILY_CSV}")
+
+    # Telegram daily summary (skip with --quiet, e.g. for ad-hoc reruns)
+    if "--quiet" not in sys.argv:
+        send_daily_summary(trade_records, total_net, total_fees, wins)
+
+
+def send_daily_summary(trade_records, total_net, total_fees, total_wins):
+    """Post a clean, styled daily summary to Telegram alongside the CSV refresh."""
+    today = time.strftime("%Y-%m-%d")
+    todays = [r for r in trade_records if r["date"] == today]
+    day_net = sum(r["net"] for r in todays)
+    day_wins = sum(1 for r in todays if r["net"] >= 0)
+    day_losses = len(todays) - day_wins
+    total_losses = len(trade_records) - total_wins
+    win_rate = round(total_wins / len(trade_records) * 100) if trade_records else 0
+
+    if todays:
+        trade_lines = "\n".join(
+            f"{'🟢' if r['net'] >= 0 else '🔴'}  #{r['symbol']}  {r['side']}  →  {r['net']:+.2f} USDT"
+            for r in todays
+        )
+        today_block = (
+            f"🔶  Trades : {len(todays)}   ( {day_wins}W / {day_losses}L )\n"
+            f"🔶  Net P&L : {day_net:+.2f} USDT\n"
+            f"\n{trade_lines}"
+        )
+    else:
+        today_block = "🔶  No trades closed today"
+
+    msg = (
+        f"💫  DAILY P&L REPORT 💫\n"
+        f"\n"
+        f"🗓 DATE:  {today}\n"
+        f"\n"
+        f"{today_block}\n"
+        f"\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"\n"
+        f"❇️  All-time Net : {total_net:+.2f} USDT\n"
+        f"❇️  Win Rate : {win_rate}%   ( {total_wins}W / {total_losses}L )\n"
+        f"❇️  Total Fees : {total_fees:.2f} USDT\n"
+        f"\n"
+        f"✅  Journal CSV updated"
+    )
+    send_telegram_message(msg)
 
 
 if __name__ == "__main__":

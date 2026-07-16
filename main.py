@@ -127,10 +127,8 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, _handle_sigterm)
     print_startup_banner()
     args = parse_args()
-    send_telegram_message(
-        f"🟢 Bot started (mode={args.mode}, env={TRADING_ENV.upper()}, "
-        f"{'DEMO simulation' if DEMO_MODE else 'REAL network calls'})"
-    )
+    env_label = "Live=Real Funds" if TRADING_ENV == "live" else "DEMO=Fake Funds"
+    send_telegram_message(f"🟢 Bot started ({env_label}, mode={args.mode})")
     took_over = False
     try:
         took_over = asyncio.run(main_async(args))

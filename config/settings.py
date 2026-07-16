@@ -68,12 +68,15 @@ else:
 #   "A" (default) -> $2.5 risk. SL -> breakeven at TP3, SL -> TP2's price at TP4.
 #   "B"           -> $4 risk.   SL -> breakeven at TP2, SL -> TP2's price at TP3,
 #                                SL -> TP3's price at TP4.
+#   "C"           -> $5 risk.   SL -> breakeven at TP2, then NO further moves - waits
+#                                for the full final-TP exit (or breakeven stop-out).
 # Each stage tuple is (trigger TP index, SL target TP index or None=breakeven/entry),
 # 0-based against signal.tps. Stored on each trade at open time (core/trade_tracker.py)
 # so an in-flight trade keeps the shape it opened under even if RISK_PLAN changes later.
 RISK_PLANS = {
     "A": {"risk_usd": 2.5, "sl_stages": [(2, None), (3, 1)]},          # TP3->BE, TP4->TP2
     "B": {"risk_usd": 4.0, "sl_stages": [(1, None), (2, 1), (3, 2)]},  # TP2->BE, TP3->TP2, TP4->TP3
+    "C": {"risk_usd": 5.0, "sl_stages": [(1, None)]},                  # TP2->BE, then wait for final TP
 }
 RISK_PLAN = os.getenv("RISK_PLAN", "A").strip().upper()
 if RISK_PLAN not in RISK_PLANS:
@@ -81,6 +84,20 @@ if RISK_PLAN not in RISK_PLANS:
     RISK_PLAN = "A"
 RISK_USD = RISK_PLANS[RISK_PLAN]["risk_usd"]
 SL_STAGES = RISK_PLANS[RISK_PLAN]["sl_stages"]
+
+# Optional custom risk override: set RISK_USD in .env to any dollar amount (e.g. 2, 4, 5)
+# and it replaces the selected plan's default risk - the SL-trail shape stays the plan's.
+# So RISK_PLAN=C + RISK_USD=2 gives Plan C's "breakeven then wait" trail at $2 risk.
+_risk_override = os.getenv("RISK_USD", "").strip()
+if _risk_override:
+    try:
+        _risk_val = float(_risk_override)
+        if _risk_val > 0:
+            RISK_USD = _risk_val
+        else:
+            print(f"[WARN] RISK_USD={_risk_override!r} must be positive - using plan default ${RISK_USD}")
+    except ValueError:
+        print(f"[WARN] RISK_USD={_risk_override!r} is not a number - using plan default ${RISK_USD}")
 LEVERAGE = 10           # Fallback leverage, only used if per-trade calculation (below) can't
                         # get the data it needs (e.g. instrument/risk-limit lookup fails).
 

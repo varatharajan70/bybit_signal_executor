@@ -76,17 +76,19 @@ class TelegramSignalListener:
             if signal:
                 info = calc_runner_profit(signal)
                 lines = [
-                    f"📡 Signal received: #{signal.symbol} {signal.side} @ {signal.entry}",
-                    f"Qty {signal.qty}  SL {signal.stop}  (max loss ${info['max_loss']:.2f})",
+                    f"💫 Signal received: #{signal.symbol} 💫",
+                    "",
+                    f"📌 {signal.side} @ {signal.entry} Qty {signal.qty}  SL {signal.stop}  (max loss ${info['max_loss']:.2f})",
+                    "",
                 ]
                 for s in info["stages"]:
-                    emoji = "🔒" if s["sl_label"] == "breakeven" else "🔐"
                     lines.append(
-                        f"{emoji} SL → {s['sl_label']} ({s['sl_price']}) @ "
+                        f"🔶 SL → {s['sl_label']} ({s['sl_price']}) @ "
                         f"{s['trigger_label']} {s['trigger_price']}"
                     )
+                lines.append("")
                 lines.append(
-                    f"🎯 Full qty exits @ TP{len(signal.tps)} {info['exit_tp']}  "
+                    f"🏷 Full qty exits @ TP{len(signal.tps)} {info['exit_tp']}  "
                     f"RR {info['rr']:.2f}  profit ${info['profit']:.2f}"
                 )
                 msg_id = send_telegram_message("\n".join(lines))
