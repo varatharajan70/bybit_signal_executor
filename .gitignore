@@ -9,6 +9,7 @@ data/active_trades.json
 logs/
 bot.pid
 data/signal_trades.jsonl
+data/signal_input.txt
 reports/
 scratch_pnl.py
 .claude/
